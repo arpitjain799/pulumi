@@ -849,7 +849,7 @@ func (sg *stepGenerator) generateSteps(event RegisterResourceEvent) ([]Step, res
 	// We will also not record this non-created resource into the checkpoint as it doesn't actually
 	// exist.
 
-	if !isTargeted && !providers.IsProviderType(goal.Type) {
+	if !isTargeted {
 		sg.sames[urn] = true
 		sg.skippedCreates[urn] = true
 		return []Step{NewSkippedCreateStep(sg.deployment, event, new)}, nil

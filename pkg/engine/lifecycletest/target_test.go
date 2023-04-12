@@ -11,6 +11,7 @@ import (
 	. "github.com/pulumi/pulumi/pkg/v3/engine"
 	"github.com/pulumi/pulumi/pkg/v3/resource/deploy"
 	"github.com/pulumi/pulumi/pkg/v3/resource/deploy/deploytest"
+	"github.com/pulumi/pulumi/pkg/v3/resource/deploy/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
@@ -506,6 +507,61 @@ func TestCreateDuringTargetedUpdate_UntargetedCreateReferencedByTarget(t *testin
 	host2 := deploytest.NewPluginHost(nil, nil, program2, loaders...)
 
 	p.Options.Host = host2
+	p.Options.UpdateTargets = deploy.NewUrnTargetsFromUrns([]resource.URN{resA})
+	p.Steps = []TestStep{{
+		Op:            Update,
+		ExpectFailure: true,
+	}}
+	p.Run(t, nil)
+}
+
+func TestCreateDuringTargetedUpdate_UntargetedProviderReferencedByTarget(t *testing.T) {
+	t.Parallel()
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				CheckF: func(urn resource.URN, olds, news resource.PropertyMap, randomSeed []byte,
+				) (resource.PropertyMap, []plugin.CheckFailure, error) {
+					assert.Fail(t, "Check shouldn't be called because the provider shouldn't be created")
+					return nil, nil, fmt.Errorf("should not be called")
+				},
+				CreateF: func(urn resource.URN, inputs resource.PropertyMap, timeout float64, preview bool,
+				) (resource.ID, resource.PropertyMap, resource.Status, error) {
+					assert.Fail(t, "Create shouldn't be called because the provider shouldn't be created")
+					return "", nil, resource.StatusUnknown, fmt.Errorf("should not be called")
+				},
+			}, nil
+		}),
+	}
+
+	// Create a resource A with --target but don't create its explicit provider.
+
+	program := deploytest.NewLanguageRuntime(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
+		provURN, provID, _, err := monitor.RegisterResource(providers.MakeProviderType("pkgA"), "provA", true)
+		assert.NoError(t, err)
+
+		if provID == "" {
+			provID = providers.UnknownID
+		}
+
+		provRef, err := providers.NewReference(provURN, provID)
+		assert.NoError(t, err)
+
+		_, _, _, err = monitor.RegisterResource("pkgA:m:typA", "resA", true, deploytest.ResourceOptions{
+			Provider: provRef.String(),
+		})
+		assert.NoError(t, err)
+		return nil
+	})
+	host1 := deploytest.NewPluginHost(nil, nil, program, loaders...)
+
+	p := &TestPlan{
+		Options: UpdateOptions{Host: host1},
+	}
+
+	resA := p.NewURN("pkgA:m:typA", "resA", "")
+
 	p.Options.UpdateTargets = deploy.NewUrnTargetsFromUrns([]resource.URN{resA})
 	p.Steps = []TestStep{{
 		Op:            Update,

@@ -1,4 +1,4 @@
-// Copyright 2016-2021, Pulumi Corporation.
+// Copyright 2016-2023, Pulumi Corporation.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -133,13 +133,12 @@ func (s *SameStep) Apply(preview bool) (resource.Status, StepCompleteFunc, error
 
 	// If the resource is a provider, ensure that it is present in the registry under the appropriate URNs.
 	if providers.IsProviderType(s.new.Type) {
-		ref, err := providers.NewReference(s.new.URN, s.new.ID)
-		if err != nil {
-			return resource.StatusOK, nil,
-				fmt.Errorf("bad provider reference '%v' for resource %v: %v", s.Provider(), s.URN(), err)
-		}
 		if s.Deployment() != nil {
-			s.Deployment().SameProvider(ref)
+			err := s.Deployment().SameProvider(s.new)
+			if err != nil {
+				return resource.StatusOK, nil,
+					fmt.Errorf("bad provider state for resource %v: %v", s.URN(), err)
+			}
 		}
 	}
 

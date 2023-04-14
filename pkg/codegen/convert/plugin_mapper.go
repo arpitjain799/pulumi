@@ -24,6 +24,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
 
@@ -173,10 +174,110 @@ func NewPluginMapper(ws Workspace,
 	}, nil
 }
 
+// getMappingForPlugin calls GetMapping on the given plugin and returns it's result. Currently if looking up
+// the "terraform" mapping and getting an empty result this will fallback to also asking for the "tf" mapping.
+// This is because tfbridge providers originally only replied to "tf", while new ones reply (with the same
+// answer) to both "tf" and "terraform".
+func (l *pluginMapper) getMappingForPlugin(pluginSpec mapperPluginSpec) ([]byte, string, error) {
+	providerPlugin, err := l.providerFactory(pluginSpec.name, &pluginSpec.version)
+	if err != nil {
+		// We should maybe be lenient here and ignore errors but for now assume it's better to fail out on
+		// things like providers failing to start.
+		return nil, "", fmt.Errorf("could not create provider '%s': %w", pluginSpec.name, err)
+	}
+	contract.IgnoreClose(providerPlugin)
+
+	data, mappedProvider, err := providerPlugin.GetMapping(l.conversionKey)
+	if err != nil {
+		// This was an error calling GetMapping, not just that GetMapping returned a nil result. It's fine for
+		// GetMapping to return (nil, "", nil) as that simply indicates that the plugin doesn't have a mapping
+		// for the requested key.
+		return nil, "", fmt.Errorf("could not get mapping for provider '%s': %w", pluginSpec.name, err)
+	}
+	// A provider should return non-empty results if it has a mapping.
+	if mappedProvider != "" && len(data) != 0 {
+		return data, mappedProvider, nil
+	}
+	// If a provider returns (empty, "provider") we also treat that as no mapping, because only the slice part
+	// gets returned to the converter plugin and it needs to assume that empty means no mapping, but we warn
+	// that this is unexpected.
+	if mappedProvider != "" && len(data) == 0 {
+		logging.Warningf(
+			"provider '%s' returned empty data but a filled provider name '%s' for '%s', "+
+				"this is unexpected behaviour assuming no mapping", pluginSpec.name, mappedProvider, l.conversionKey)
+	}
+	// TODO: Temporary hack to work around the fact that most of the plugins return a mapping for "tf" but
+	// not "terraform" but they're the same thing.
+	if l.conversionKey == "terraform" {
+		// Copy-pasta of the above _but_ we'll delete this whole if block once the plugins have had a
+		// chance to update.
+		data, mappedProvider, err := providerPlugin.GetMapping("tf")
+		if err != nil {
+			// This was an error calling GetMapping, not just that GetMapping returned a nil result. It's fine
+			// for GetMapping to return (nil, nil) as that simply indicates that the plugin doesn't have a
+			// mapping for the requested key.
+			return nil, "", fmt.Errorf("could not get mapping for provider '%s': %w", pluginSpec.name, err)
+		}
+		// A provider should return non-empty results if it has a mapping.
+		if mappedProvider != "" && len(data) != 0 {
+			return data, mappedProvider, nil
+		}
+		// If a provider returns (empty, "provider") we also treat that as no mapping, because only the slice part
+		// gets returned to the converter plugin and it needs to assume that empty means no mapping, but we warn
+		// that this is unexpected.
+		if mappedProvider != "" && len(data) == 0 {
+			logging.Warningf(
+				"provider '%s' returned empty data but a filled provider name '%s' for '%s', "+
+					"this is unexpected behaviour assuming no mapping", pluginSpec.name, mappedProvider, l.conversionKey)
+		}
+	}
+
+	return nil, "", err
+}
+
 func (l *pluginMapper) GetMapping(provider string) ([]byte, error) {
-	// Do we already have an entry for this provider, if so use it
+	// If we already have an entry for this provider, use it
 	if entry, has := l.entries[provider]; has {
 		return entry, nil
+	}
+
+	// No entry yet, we're going to _try_ to get the plugin that matches the provider name as generally these
+	// will match up and it saves us doing a linear search through all plugins.
+	matchIdx := -1
+	for i, pluginSpec := range l.plugins {
+		if pluginSpec.name == tokens.Package(provider) {
+			matchIdx = i
+			break
+		}
+	}
+
+	if matchIdx != -1 {
+		// Pop this out the list and try and get its mapping. We pop by doing a swap and remove of the last
+		// element as order doesn't matter here.
+		pluginSpec := l.plugins[matchIdx]
+		l.plugins[matchIdx] = l.plugins[len(l.plugins)-1]
+		l.plugins = l.plugins[:len(l.plugins)-1]
+
+		data, mappedProvider, err := l.getMappingForPlugin(pluginSpec)
+		if err != nil {
+			return nil, err
+		}
+		if mappedProvider != "" {
+			contract.Assertf(len(data) != 0,
+				"getMappingForPlugin returned empty data but non-empty provider name, %s", mappedProvider)
+
+			// Don't overwrite entries, the first wins
+			if _, has := l.entries[mappedProvider]; !has {
+				l.entries[mappedProvider] = data
+			}
+			// If we got a mapping for this provider we can return it
+			if mappedProvider == provider {
+				return data, nil
+			}
+		}
+
+		// We didn't find the mapping for the provider were looking for in the pulumi plugin of the same name,
+		// so fallback to the linear search.
 	}
 
 	// No entry yet, start popping providers off the plugin list and return the first one that returns
@@ -195,54 +296,21 @@ func (l *pluginMapper) GetMapping(provider string) ([]byte, error) {
 		pluginSpec := l.plugins[0]
 		l.plugins = l.plugins[1:]
 
-		providerPlugin, err := l.providerFactory(pluginSpec.name, &pluginSpec.version)
+		data, mappedProvider, err := l.getMappingForPlugin(pluginSpec)
 		if err != nil {
-			// We should maybe be lenient here and ignore errors but for now assume it's better to fail out on
-			// things like providers failing to start.
-			return nil, fmt.Errorf("could not create provider '%s': %w", pluginSpec.name, err)
+			return nil, err
 		}
-		defer contract.IgnoreClose(providerPlugin)
+		if mappedProvider != "" {
+			contract.Assertf(len(data) != 0,
+				"getMappingForPlugin returned empty data but non-empty provider name, %s", mappedProvider)
 
-		data, mappedProvider, err := providerPlugin.GetMapping(l.conversionKey)
-		if err != nil {
-			// This was an error calling GetMapping, not just that GetMapping returned a nil result. It's fine
-			// for GetMapping to return (nil, nil).
-			return nil, fmt.Errorf("could not get mapping for provider '%s': %w", pluginSpec.name, err)
-		}
-		// A provider returns empty if it didn't have a mapping
-		if mappedProvider != "" && len(data) != 0 {
 			// Don't overwrite entries, the first wins
 			if _, has := l.entries[mappedProvider]; !has {
 				l.entries[mappedProvider] = data
 			}
-
 			// If this was the provider we we're looking for we can now return it
 			if mappedProvider == provider {
 				return data, nil
-			}
-		}
-		// TODO: Temporary hack to work around the fact that most of the plugins return a mapping for "tf" but
-		// not "terraform" but they're the same thing.
-		if l.conversionKey == "terraform" {
-			// Copy-pasta of the above _but_ we'll delete this whole if block once the plugins have had a
-			// chance to update.
-			data, mappedProvider, err := providerPlugin.GetMapping("tf")
-			if err != nil {
-				// This was an error calling GetMapping, not just that GetMapping returned a nil result. It's
-				// fine for GetMapping to return (nil, nil).
-				return nil, fmt.Errorf("could not get mapping for provider '%s': %w", pluginSpec.name, err)
-			}
-			// A provider returns empty if it didn't have a mapping
-			if mappedProvider != "" && len(data) != 0 {
-				// Don't overwrite entries, the first wins
-				if _, has := l.entries[mappedProvider]; !has {
-					l.entries[mappedProvider] = data
-				}
-
-				// If this was the provider we we're looking for we can now return it
-				if mappedProvider == provider {
-					return data, nil
-				}
 			}
 		}
 	}

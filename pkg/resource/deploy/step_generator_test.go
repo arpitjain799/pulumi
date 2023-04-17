@@ -428,3 +428,29 @@ func TestResourceInheritsOptionsFromParent(t *testing.T) {
 		})
 	}
 }
+
+// TestResourceInheritsOptionsFromParentNoGoal checks that configureGoal does not error when the parent goal is not
+// present in the step generator. This can occur for Read resources (i.e. pkg.Resource.get()) and MLCs.
+func TestResourceInheritsOptionsFromParentNoGoal(t *testing.T) {
+	t.Parallel()
+
+	parentURN := resource.NewURN("a", "proj", "d:e:f", "a:b:c", "parent")
+
+	childURN := resource.NewURN("a", "proj", "d:e:f", "a:b:c", "child")
+	goal := &resource.Goal{
+		Parent: parentURN,
+		Type:   childURN.Type(),
+		Name:   childURN.Name(),
+	}
+
+	// Create a step generator without the parent goal.
+	sg := stepGenerator{
+		urns: map[resource.URN]bool{
+			parentURN: true,
+		},
+		resourceGoals: map[resource.URN]*resource.Goal{},
+	}
+	err := sg.configureGoal(goal)
+
+	assert.Nil(t, err)
+}

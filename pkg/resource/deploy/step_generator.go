@@ -435,15 +435,18 @@ func (sg *stepGenerator) configureGoal(goal *resource.Goal) result.Result {
 		return res
 	}
 
-	if p != "" {
-		parentGoal, hasParent := sg.resourceGoals[p]
-		// Make resource goal inherit parent's default resource options if left unset.
-		if hasParent && goal.DeletedWith == "" {
-			goal.DeletedWith = parentGoal.DeletedWith
-		}
+	goal.Parent = p
+	if p == "" {
+		return nil
 	}
 
-	goal.Parent = p
+	if sg.deployment == nil || sg.deployment.news == nil {
+		return nil
+	}
+
+	if parent, ok := sg.deployment.news.get(goal.Parent); ok && goal.DeletedWith == "" {
+		goal.DeletedWith = parent.DeletedWith
+	}
 	return nil
 }
 

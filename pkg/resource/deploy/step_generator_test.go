@@ -398,10 +398,9 @@ func TestResourceInheritsOptionsFromParent(t *testing.T) {
 			t.Parallel()
 
 			parentURN := resource.NewURN("a", "proj", "d:e:f", "a:b:c", "parent")
-			parentGoal := &resource.Goal{
+			parentState := &resource.State{
 				Parent:      "",
 				Type:        parentURN.Type(),
-				Name:        parentURN.Name(),
 				DeletedWith: test.parentDeletedWith,
 			}
 
@@ -417,14 +416,16 @@ func TestResourceInheritsOptionsFromParent(t *testing.T) {
 				urns: map[resource.URN]bool{
 					parentURN: true,
 				},
-				resourceGoals: map[resource.URN]*resource.Goal{
-					parentURN: parentGoal,
+				deployment: &Deployment{
+					news: &resourceMap{},
 				},
 			}
+
+			sg.deployment.news.set(parentURN, parentState)
 			err := sg.configureGoal(goal)
 
 			assert.Nil(t, err)
-			assert.Equal(t, goal.DeletedWith, test.wantDeletedWith)
+			assert.Equal(t, test.wantDeletedWith, goal.DeletedWith)
 		})
 	}
 }
@@ -435,6 +436,11 @@ func TestResourceInheritsOptionsFromParentNoGoal(t *testing.T) {
 	t.Parallel()
 
 	parentURN := resource.NewURN("a", "proj", "d:e:f", "a:b:c", "parent")
+	parentState := &resource.State{
+		Parent:      "",
+		Type:        parentURN.Type(),
+		DeletedWith: "parent-deleted-with",
+	}
 
 	childURN := resource.NewURN("a", "proj", "d:e:f", "a:b:c", "child")
 	goal := &resource.Goal{
@@ -448,9 +454,13 @@ func TestResourceInheritsOptionsFromParentNoGoal(t *testing.T) {
 		urns: map[resource.URN]bool{
 			parentURN: true,
 		},
-		resourceGoals: map[resource.URN]*resource.Goal{},
+		deployment: &Deployment{
+			news: &resourceMap{},
+		},
 	}
+	sg.deployment.news.set(parentURN, parentState)
 	err := sg.configureGoal(goal)
 
+	assert.Equal(t, resource.URN("parent-deleted-with"), goal.DeletedWith)
 	assert.Nil(t, err)
 }

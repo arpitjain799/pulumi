@@ -611,9 +611,14 @@ func (sg *stepGenerator) generateSteps(event RegisterResourceEvent) ([]Step, res
 		return []Step{NewImportStep(sg.deployment, event, new, goal.IgnoreChanges, randomSeed)}, nil
 	}
 
+	isTargeted := sg.isTargetedForUpdate(new)
+	if isTargeted {
+		sg.updateTargetsOpt.addLiteral(urn)
+	}
+
 	// Ensure the provider is okay with this resource and fetch the inputs to pass to subsequent methods.
 	var err error
-	if prov != nil {
+	if isTargeted && prov != nil {
 		var failures []plugin.CheckFailure
 
 		// If we are re-creating this resource because it was deleted earlier, the old inputs are now
@@ -773,11 +778,6 @@ func (sg *stepGenerator) generateSteps(event RegisterResourceEvent) ([]Step, res
 			NewCreateReplacementStep(sg.deployment, event, old, new, nil, nil, nil, true),
 			NewReplaceStep(sg.deployment, old, new, nil, nil, nil, true),
 		}, nil
-	}
-
-	isTargeted := sg.isTargetedForUpdate(new)
-	if isTargeted {
-		sg.updateTargetsOpt.addLiteral(urn)
 	}
 
 	// Case 3: hasOld

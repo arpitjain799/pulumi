@@ -612,9 +612,6 @@ func (sg *stepGenerator) generateSteps(event RegisterResourceEvent) ([]Step, res
 	}
 
 	isTargeted := sg.isTargetedForUpdate(new)
-	if isTargeted {
-		sg.updateTargetsOpt.addLiteral(urn)
-	}
 
 	// Ensure the provider is okay with this resource and fetch the inputs to pass to subsequent methods.
 	var err error
@@ -778,6 +775,10 @@ func (sg *stepGenerator) generateSteps(event RegisterResourceEvent) ([]Step, res
 			NewCreateReplacementStep(sg.deployment, event, old, new, nil, nil, nil, true),
 			NewReplaceStep(sg.deployment, old, new, nil, nil, nil, true),
 		}, nil
+	}
+
+	if isTargeted {
+		sg.updateTargetsOpt.addLiteral(urn)
 	}
 
 	// Case 3: hasOld

@@ -1640,3 +1640,116 @@ func TestPlannedUpdateWithDependentDelete(t *testing.T) {
 	assert.NotNil(t, snap)
 	assert.Nil(t, res)
 }
+
+func TestResoucesWithSamesTargeted(t *testing.T) {
+	t.Parallel()
+
+	// This test checks that if between generating a constraint and running the update that if new resources have been
+	// added to the stack that the update doesn't change those resources in any way that they don't cause constraint
+	// errors.
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{
+				Name: "pkgA",
+				CreateF: func(urn resource.URN, news resource.PropertyMap, timeout float64,
+					preview bool,
+				) (resource.ID, resource.PropertyMap, resource.Status, error) {
+					return resource.ID(urn.Name()), news, resource.StatusOK, nil
+				},
+				UpdateF: func(urn resource.URN, id resource.ID, olds, news resource.PropertyMap, timeout float64,
+					ignoreChanges []string, preview bool,
+				) (resource.PropertyMap, resource.Status, error) {
+					return news, resource.StatusOK, nil
+				},
+				CheckF: func(urn resource.URN,
+					olds, news resource.PropertyMap, _ []byte,
+				) (resource.PropertyMap, []plugin.CheckFailure, error) {
+					return news, nil, nil
+				},
+			}, nil
+		}),
+	}
+
+	construct := func(monitor *deploytest.ResourceMonitor) error {
+		panic("unimplemented")
+	}
+
+	program := deploytest.NewLanguageRuntime(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
+		return construct(monitor)
+	})
+
+	host := deploytest.NewPluginHost(nil, nil, program, loaders...)
+
+	p := &TestPlan{
+		Options: UpdateOptions{
+			Host:         host,
+			GeneratePlan: true,
+			Experimental: true,
+		},
+	}
+
+	project := p.GetProject()
+
+	snap := func() *deploy.Snapshot {
+		var err error
+		construct = func(monitor *deploytest.ResourceMonitor) error {
+			_, _, _, err = monitor.RegisterResource("pkgA:m:typA", "resA", true, deploytest.ResourceOptions{})
+			assert.NoError(t, err)
+			return nil
+		}
+
+		// Run an update that creates A
+		snap, res := TestOp(Update).Run(project, p.GetTarget(t, nil), UpdateOptions{
+			Host:         host,
+			GeneratePlan: true,
+			Experimental: true,
+		}, false, p.BackendClient, nil)
+		assert.Nil(t, res)
+		return snap
+	}()
+
+	plan := func() *deploy.Plan {
+		construct = func(monitor *deploytest.ResourceMonitor) error {
+			_, _, _, err := monitor.RegisterResource("pkgA:m:typA", "resA", true, deploytest.ResourceOptions{})
+			assert.NoError(t, err)
+
+			_, _, _, err = monitor.RegisterResource("pkgA:m:typA", "resB", true, deploytest.ResourceOptions{})
+			assert.NoError(t, err)
+			return nil
+		}
+
+		// Generate a plan to create B
+		plan, res := TestOp(Update).Plan(project, p.GetTarget(t, snap), UpdateOptions{
+			Host:         host,
+			GeneratePlan: true,
+			Experimental: true,
+			UpdateTargets: deploy.NewUrnTargets([]string{
+				"urn:pulumi:test::test::pkgA:m:typA::resB",
+			}),
+		}, p.BackendClient, nil)
+		assert.Nil(t, res)
+		return plan
+	}()
+
+	// Set the program to create something outside of the plan. This should fail.
+	construct = func(monitor *deploytest.ResourceMonitor) error {
+		_, _, _, err := monitor.RegisterResource("pkgA:m:typA", "resA", true, deploytest.ResourceOptions{})
+		assert.NoError(t, err)
+
+		_, _, _, err = monitor.RegisterResource("pkgA:m:typA", "resB", true, deploytest.ResourceOptions{})
+		assert.NoError(t, err)
+
+		_, _, _, err = monitor.RegisterResource("pkgA:m:typA", "res-should-cause-fail", true, deploytest.ResourceOptions{})
+		assert.NoError(t, err)
+		return nil
+	}
+
+	_, res := TestOp(Update).Run(project, p.GetTarget(t, snap), UpdateOptions{
+		Plan:         plan,
+		Host:         host,
+		GeneratePlan: true,
+		Experimental: true,
+	}, false, p.BackendClient, nil)
+	assert.NotNil(t, res)
+}

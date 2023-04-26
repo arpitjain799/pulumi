@@ -20,7 +20,6 @@ import (
 
 	"github.com/blang/semver"
 	uuid "github.com/gofrs/uuid"
-	"github.com/pkg/errors"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
@@ -30,10 +29,9 @@ import (
 )
 
 type Provider struct {
-	Name        string
-	Package     tokens.Package
-	Version     semver.Version
-	CheckCalled map[resource.URN]struct{}
+	Name    string
+	Package tokens.Package
+	Version semver.Version
 
 	Config     resource.PropertyMap
 	configured bool
@@ -134,10 +132,6 @@ func (prov *Provider) Check(urn resource.URN,
 	olds, news resource.PropertyMap, _ bool, randomSeed []byte,
 ) (resource.PropertyMap, []plugin.CheckFailure, error) {
 	contract.Requiref(randomSeed != nil, "randomSeed", "must not be nil")
-	if prov.CheckCalled == nil {
-		prov.CheckCalled = make(map[resource.URN]struct{})
-	}
-	prov.CheckCalled[urn] = struct{}{}
 	if prov.CheckF == nil {
 		return news, nil, nil
 	}
@@ -161,10 +155,6 @@ func (prov *Provider) Create(urn resource.URN, props resource.PropertyMap, timeo
 func (prov *Provider) Diff(urn resource.URN, id resource.ID,
 	olds resource.PropertyMap, news resource.PropertyMap, _ bool, ignoreChanges []string,
 ) (plugin.DiffResult, error) {
-	_, ok := prov.CheckCalled[urn]
-	if !ok {
-		return plugin.DiffResult{}, errors.Errorf("Check not called before Diff for %v", urn)
-	}
 	if prov.DiffF == nil {
 		return plugin.DiffResult{}, nil
 	}
